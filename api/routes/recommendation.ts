@@ -1,31 +1,46 @@
 import { Router, type Request, type Response } from 'express';
 import type { RecommendationStrategy, RecommendationMetrics } from '../../shared/types.js';
-import { success, error, requireAuth } from '../utils.js';
+import { PERMISSIONS } from '../../shared/types.js';
+import { success, error, requireAuth, requirePermissions } from '../utils.js';
 import { recommendationStrategies, recommendationMetrics } from '../data/mockData.js';
 
 const router = Router();
 
-router.get('/strategies', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const data: RecommendationStrategy[] = recommendationStrategies;
-    res.json(success(data, '获取成功'));
-  } catch (e) {
-    const err = e as Error;
-    res.status(500).json(error(err.message || '获取失败', 500));
-  }
-});
+router.get(
+  '/strategies',
+  requireAuth,
+  requirePermissions([PERMISSIONS.RECOMMENDATION_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const data: RecommendationStrategy[] = recommendationStrategies;
+      res.json(success(data, '获取成功'));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '获取失败', 500));
+    }
+  },
+);
 
-router.get('/metrics', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const data: RecommendationMetrics = recommendationMetrics;
-    res.json(success(data, '获取成功'));
-  } catch (e) {
-    const err = e as Error;
-    res.status(500).json(error(err.message || '获取失败', 500));
-  }
-});
+router.get(
+  '/metrics',
+  requireAuth,
+  requirePermissions([PERMISSIONS.RECOMMENDATION_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const data: RecommendationMetrics = recommendationMetrics;
+      res.json(success(data, '获取成功'));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '获取失败', 500));
+    }
+  },
+);
 
-router.put('/strategies/:id', requireAuth, async (req: Request, res: Response): Promise<void> => {
+router.put(
+  '/strategies/:id',
+  requireAuth,
+  requirePermissions([PERMISSIONS.RECOMMENDATION_EDIT]),
+  async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const body = req.body as Partial<RecommendationStrategy>;

@@ -222,8 +222,21 @@ router.post(
         return;
       }
 
+      const approvingStep = po.currentStep;
+      const approvingStepName = getStepName(approvingStep);
       const nextStatus = getNextPOStatus(po.status);
-      const rejectedFrom = po.currentStep;
+
+      const approveHistory: ApprovalHistory = {
+        step: approvingStep,
+        stepName: approvingStepName,
+        role: user.roleName,
+        user: user.name,
+        userId: user.id,
+        action: 'approve',
+        comment: comment || `${approvingStepName}通过`,
+        createdAt: new Date().toISOString(),
+        version: po.version,
+      };
 
       po.status = nextStatus;
       po.statusName = getPOStatusName(nextStatus);
@@ -231,32 +244,20 @@ router.post(
       po.currentApproverRole = getApproverRole(nextStatus);
       po.currentApprover = nextStatus === 'warehouse_pending' ? '刘国强' : '-';
 
-      const newHistory: ApprovalHistory = {
-        step: po.currentStep,
-        stepName: getStepName(po.currentStep),
-        role: user.roleName,
-        user: user.name,
-        userId: user.id,
-        action: 'approve',
-        comment: comment || '审批通过',
-        rejectedFrom,
-        createdAt: new Date().toISOString(),
-        version: po.version,
-      };
-
-      po.approvalHistory = [...po.approvalHistory, newHistory];
+      po.approvalHistory = [...po.approvalHistory, approveHistory];
 
       if (nextStatus === 'approved') {
-        po.currentStep = 4;
+        const approvedStep = 4;
+        po.currentStep = approvedStep;
         po.currentApproverRole = '仓储管理员';
         po.approvalHistory.push({
-          step: 4,
-          stepName: getStepName(4),
+          step: approvedStep,
+          stepName: getStepName(approvedStep),
           role: '系统',
           user: '系统',
           userId: 'SYSTEM',
           action: 'approve',
-          comment: '审批通过，等待入库',
+          comment: '所有节点审批通过，等待入库',
           createdAt: new Date().toISOString(),
           version: po.version,
         });
@@ -296,30 +297,32 @@ router.post(
         return;
       }
 
+      const rejectingStep = po.currentStep;
+      const rejectingStepName = getStepName(rejectingStep);
       const rejectStatus = getRejectPOStatus(po.status);
-      const rejectedFrom = po.currentStep;
+      const rejectComment = comment || '审批驳回';
 
-      po.status = rejectStatus;
-      po.statusName = getPOStatusName(rejectStatus);
-      po.lastRejectedFrom = rejectedFrom;
-      po.lastRejectionComment = comment || '审批驳回';
-      po.rejectionCount = (po.rejectionCount || 0) + 1;
-      po.currentApprover = '-';
-
-      const newHistory: ApprovalHistory = {
-        step: po.currentStep,
-        stepName: getStepName(po.currentStep),
+      const rejectHistory: ApprovalHistory = {
+        step: rejectingStep,
+        stepName: rejectingStepName,
         role: user.roleName,
         user: user.name,
         userId: user.id,
         action: 'reject',
-        comment: comment || '审批驳回',
-        rejectedFrom,
+        comment: rejectComment,
+        rejectedFrom: rejectingStep,
         createdAt: new Date().toISOString(),
         version: po.version,
       };
 
-      po.approvalHistory = [...po.approvalHistory, newHistory];
+      po.status = rejectStatus;
+      po.statusName = getPOStatusName(rejectStatus);
+      po.lastRejectedFrom = rejectingStep;
+      po.lastRejectionComment = rejectComment;
+      po.rejectionCount = (po.rejectionCount || 0) + 1;
+      po.currentApprover = '-';
+
+      po.approvalHistory = [...po.approvalHistory, rejectHistory];
 
       mockPurchaseOrders[idx] = po;
 
@@ -355,7 +358,14 @@ router.post(
         return;
       }
 
-      po.version = (po.version || 1) + 1;
+      const prevVersion = po.version;
+      const newVersion = (po.version || 1) + 1;
+      const lastRejection = po.approvalHistory
+        .filter((h) => h.action === 'reject' && h.version === prevVersion)
+        .pop();
+      const rejectedFrom = lastRejection?.rejectedFrom || po.lastRejectedFrom || 1;
+
+      po.version = newVersion;
       po.status = 'finance_pending';
       po.statusName = getPOStatusName('finance_pending');
       po.currentStep = getCurrentStep('finance_pending');
@@ -364,28 +374,20 @@ router.post(
       po.lastRejectedFrom = undefined;
       po.lastRejectionComment = undefined;
 
-      const lastSubmitIdx = po.approvalHistory
-        .map((h, i) => (h.action === 'submit' || h.action === 'resubmit' ? i : -1))
-        .filter((i) => i !== -1)
-        .pop();
-
-      if (lastSubmitIdx !== undefined && lastSubmitIdx >= 0) {
-        po.approvalHistory = po.approvalHistory.slice(0, lastSubmitIdx + 1);
-      }
-
-      const newHistory: ApprovalHistory = {
+      const resubmitHistory: ApprovalHistory = {
         step: 1,
         stepName: getStepName(1),
         role: user.roleName,
         user: user.name,
         userId: user.id,
         action: 'resubmit',
-        comment: comment || `第${po.version}次重新提交，已修改问题`,
+        comment: comment || `第${newVersion}版重新提交，已修改问题`,
+        rejectedFrom: rejectedFrom,
         createdAt: new Date().toISOString(),
-        version: po.version,
+        version: newVersion,
       };
 
-      po.approvalHistory = [...po.approvalHistory, newHistory];
+      po.approvalHistory = [...po.approvalHistory, resubmitHistory];
 
       mockPurchaseOrders[idx] = po;
 

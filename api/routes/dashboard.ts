@@ -2,7 +2,8 @@ import { Router, type Request, type Response } from 'express';
 import type { DashboardOverview, GMVTrendPoint, ChannelStat } from '../../shared/types.js';
 import { PERMISSIONS } from '../../shared/types.js';
 import { success, error, requireAuth, requirePermissions, type AuthRequest, applyDataScope } from '../utils.js';
-import { dashboardData, orders, mockAlerts } from '../data/mockData.js';
+import { dashboardData, mockAlerts } from '../data/mockData.js';
+import { getOrdersPool } from './collection.js';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ router.get(
     try {
       const user = (req as AuthRequest).currentUser!;
 
-      let filteredOrders = applyDataScope(orders, user);
+      let filteredOrders = applyDataScope(getOrdersPool(), user);
 
       const regionFilter = user.role === 'region_manager' && user.region;
 
@@ -48,8 +49,29 @@ router.get(
           color: colors[idx % colors.length],
         }));
       } else {
-        trend = dashboardData.gmv.trend;
-        channels = dashboardData.channels;
+        const trendMap = new Map<string, number>();
+        filteredOrders.forEach((order) => {
+          const date = order.createdAt.slice(0, 10);
+          trendMap.set(date, (trendMap.get(date) || 0) + order.amount);
+        });
+
+        const sortedDates = Array.from(trendMap.keys()).sort();
+        trend = sortedDates.slice(-30).map((date) => ({
+          date,
+          value: Math.round(trendMap.get(date) || 0),
+        }));
+
+        const channelMap = new Map<string, number>();
+        filteredOrders.forEach((order) => {
+          channelMap.set(order.channelName, (channelMap.get(order.channelName) || 0) + order.amount);
+        });
+
+        const colors = ['#3B82F6', '#10B981', '#F59E0B'];
+        channels = Array.from(channelMap.entries()).map(([name, value], idx) => ({
+          name,
+          value: Math.round(value),
+          color: colors[idx % colors.length],
+        }));
       }
 
       const todayAmount = trend.length > 0 ? trend[trend.length - 1].value : 0;

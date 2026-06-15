@@ -1055,67 +1055,111 @@ export function generateCollectionTasks(): DataCollectionTask[] {
 
 export const collectionTasks: DataCollectionTask[] = generateCollectionTasks();
 
-export function generateCleanRecords(count: number): CleanRecord[] {
+export function generateCleanRecords(count: number, orderList: Order[]): CleanRecord[] {
   const list: CleanRecord[] = [];
   const issueTypes: Array<'duplicate' | 'missing_phone' | 'abnormal_amount' | 'invalid_status' | 'other'> = [
     'duplicate', 'missing_phone', 'abnormal_amount', 'invalid_status', 'other',
   ];
   const actions: Array<'discarded' | 'fixed' | 'flagged'> = ['discarded', 'fixed', 'flagged'];
   const issueDescriptions: Record<string, string[]> = {
-    duplicate: ['订单号重复', '用户手机号重复', 'SKU编码重复'],
+    duplicate: ['订单号重复', '用户手机号重复', '跨渠道同一用户重复下单'],
     missing_phone: ['收货人手机号为空', '紧急联系人电话缺失'],
     abnormal_amount: ['订单金额异常偏高', '订单金额为负数', '单价超出合理范围'],
     invalid_status: ['订单状态流转异常', '支付状态与订单状态不匹配'],
     other: ['地址格式不规范', '姓名包含特殊字符'],
   };
   const taskIds = collectionTasks.map((t) => t.id);
+  const dirtyOrderCandidates = orderList.filter((_, i) => i % 7 === 0);
+  let dirtyOrderIdx = 0;
 
   for (let i = 0; i < count; i++) {
     const issueType = issueTypes[i % issueTypes.length];
     const action = issueType === 'duplicate' ? 'discarded'
-      : issueType === 'missing_phone' ? 'flagged'
+      : issueType === 'missing_phone' ? 'fixed'
+      : issueType === 'abnormal_amount' ? 'fixed'
       : randomChoice(actions);
     const description = randomChoice(issueDescriptions[issueType]);
+    const order = dirtyOrderCandidates[dirtyOrderIdx % dirtyOrderCandidates.length];
+    dirtyOrderIdx++;
 
-    const originalData: Record<string, unknown> = {
-      orderId: `ORD${randomInt(100000, 999999)}`,
-      userName: randomName(),
-      amount: randomFloat(10, 10000, 2),
-      phone: issueType === 'missing_phone' ? '' : randomPhone(),
-      status: issueType === 'invalid_status' ? 'unknown' : randomChoice(['pending', 'paid', 'shipped']),
-    };
+    const originalOrder = orderList.find((o) => o.id === order?.id);
+    const originalData: Record<string, unknown> = originalOrder
+      ? {
+          orderId: originalOrder.id,
+          orderNo: originalOrder.orderNo,
+          userName: originalOrder.userName,
+          amount: issueType === 'abnormal_amount' ? -Math.abs(originalOrder.amount) : originalOrder.amount,
+          phone: issueType === 'missing_phone' ? '' : originalOrder.userPhone,
+          status: issueType === 'invalid_status' ? 'unknown' : originalOrder.status,
+          channel: originalOrder.channel,
+          region: originalOrder.region,
+        }
+      : {
+          orderId: `ORD${randomInt(100000, 999999)}`,
+          userName: randomName(),
+          amount: randomFloat(10, 10000, 2),
+          phone: issueType === 'missing_phone' ? '' : randomPhone(),
+          status: issueType === 'invalid_status' ? 'unknown' : randomChoice(['pending', 'paid', 'shipped']),
+        };
 
     let fixedData: Record<string, unknown> | undefined;
-    if (action === 'fixed') {
+    let poolResult: 'entered' | 'skipped' | 'flagged' = 'entered';
+
+    if (action === 'discarded') {
+      poolResult = 'skipped';
+    } else if (action === 'flagged') {
+      poolResult = 'flagged';
+    } else if (action === 'fixed') {
+      poolResult = 'entered';
       fixedData = {
         ...originalData,
         phone: issueType === 'missing_phone' ? randomPhone() : originalData.phone,
         status: issueType === 'invalid_status' ? 'pending' : originalData.status,
-        amount: issueType === 'abnormal_amount' ? Math.abs(originalData.amount as number) : originalData.amount,
+        amount: issueType === 'abnormal_amount' ? Math.abs(Number(originalData.amount)) : originalData.amount,
       };
+    }
+
+    if (originalOrder && action !== 'discarded') {
+      if (action === 'fixed') {
+        if (issueType === 'missing_phone') originalOrder.userPhone = fixedData!.phone as string;
+        if (issueType === 'abnormal_amount') originalOrder.amount = fixedData!.amount as number;
+        if (issueType === 'invalid_status') originalOrder.status = fixedData!.status as Order['status'];
+        originalOrder.dataQuality = 'fixed';
+      } else if (action === 'flagged') {
+        originalOrder.dataQuality = 'dirty';
+      }
+    } else if (originalOrder && action === 'discarded') {
+      originalOrder.dataQuality = 'dirty';
     }
 
     list.push({
       id: randomId('CLEAN'),
       taskId: taskIds[i % taskIds.length],
+      orderId: originalOrder?.id,
       originalData,
       issueType,
       issueDescription: description,
       action,
       fixedData,
+      poolResult,
       createdAt: randomDateWithinDays(7),
     });
   }
   return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
-export const cleanRecords: CleanRecord[] = generateCleanRecords(30);
+export const cleanRecords: CleanRecord[] = generateCleanRecords(30, mockOrders);
+
+const discardedOrderIds = new Set(
+  cleanRecords.filter((r) => r.action === 'discarded' && r.orderId).map((r) => r.orderId!),
+);
+
+export const orders: Order[] = mockOrders.filter((o) => !discardedOrderIds.has(o.id));
 
 export const inventoryForecasts = mockInventoryForecast;
 export const purchaseOrders = mockPurchaseOrders;
 export const lifecycleData = mockLifecycleDistribution;
 export const marketingCampaigns = mockMarketingCampaigns;
-export const orders = mockOrders;
 export const recommendationStrategies = mockRecommendationStrategies;
 export const recommendationMetrics = mockRecommendationMetrics;
 export const rules = mockRuleConfigs;

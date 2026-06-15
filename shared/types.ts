@@ -204,11 +204,13 @@ export interface DataCollectionTask {
 export interface CleanRecord {
   id: string;
   taskId: string;
+  orderId?: string;
   originalData: Record<string, unknown>;
   issueType: 'duplicate' | 'missing_phone' | 'abnormal_amount' | 'invalid_status' | 'other';
   issueDescription: string;
   action: 'discarded' | 'fixed' | 'flagged';
   fixedData?: Record<string, unknown>;
+  poolResult: 'entered' | 'skipped' | 'flagged';
   createdAt: string;
 }
 

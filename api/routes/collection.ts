@@ -1,8 +1,17 @@
 import { Router, type Request, type Response } from 'express';
-import type { DataCollectionTask, CleanRecord } from '../../shared/types.js';
+import type { DataCollectionTask, CleanRecord, Order } from '../../shared/types.js';
 import { PERMISSIONS } from '../../shared/types.js';
 import { success, error, requireAuth, requirePermissions, type AuthRequest } from '../utils.js';
-import { collectionTasks as mockCollectionTasks, cleanRecords as mockCleanRecords } from '../data/mockData.js';
+import {
+  collectionTasks as mockCollectionTasks,
+  cleanRecords as mockCleanRecords,
+  orders as exportedOrders,
+} from '../data/mockData.js';
+
+let ordersPool = [...exportedOrders];
+export function getOrdersPool(): Order[] {
+  return ordersPool;
+}
 
 const router = Router();
 
@@ -38,6 +47,104 @@ router.get(
     }
   },
 );
+
+function performDataCleaning(taskId: string): { cleaned: number; discarded: number; flagged: number } {
+  const randomPhone = () => `138${String(Math.floor(Math.random() * 100000000)).padStart(8, '0')}`;
+  const randomId = (prefix = '') => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const issueTypes: Array<'duplicate' | 'missing_phone' | 'abnormal_amount' | 'invalid_status' | 'other'> = [
+    'duplicate',
+    'missing_phone',
+    'abnormal_amount',
+    'invalid_status',
+    'other',
+  ];
+  const issueDescriptions: Record<string, string[]> = {
+    duplicate: ['订单号重复', '用户手机号重复', '跨渠道同一用户重复下单'],
+    missing_phone: ['收货人手机号为空', '紧急联系人电话缺失'],
+    abnormal_amount: ['订单金额异常偏高', '订单金额为负数', '单价超出合理范围'],
+    invalid_status: ['订单状态流转异常', '支付状态与订单状态不匹配'],
+    other: ['地址格式不规范', '姓名包含特殊字符'],
+  };
+
+  const poolOrderIds = new Set(ordersPool.map((o) => o.id));
+  const candidates = ordersPool.filter((_, i) => i % 11 === 2 || i % 11 === 5 || i % 11 === 8);
+  let cleanedCount = 0;
+  let discardedCount = 0;
+  let flaggedCount = 0;
+
+  candidates.slice(0, Math.max(3, Math.floor(candidates.length * 0.3))).forEach((order, orderIdx) => {
+    const issueType = issueTypes[orderIdx % issueTypes.length];
+    const actionsList: Array<'discarded' | 'fixed' | 'flagged'> = ['flagged', 'fixed', 'flagged'];
+    const action: 'discarded' | 'fixed' | 'flagged' = issueType === 'duplicate' ? 'discarded'
+      : issueType === 'missing_phone' ? 'fixed'
+      : issueType === 'abnormal_amount' ? 'fixed'
+      : actionsList[orderIdx % 3];
+    const description = issueDescriptions[issueType][orderIdx % issueDescriptions[issueType].length];
+
+    const originalData: Record<string, unknown> = {
+      orderId: order.id,
+      orderNo: order.orderNo,
+      userName: order.userName,
+      amount: issueType === 'abnormal_amount' ? -Math.abs(order.amount) : order.amount,
+      phone: issueType === 'missing_phone' ? '' : order.userPhone,
+      status: issueType === 'invalid_status' ? 'unknown' : order.status,
+      channel: order.channel,
+      region: order.region,
+    };
+
+    let fixedData: Record<string, unknown> | undefined;
+    let poolResult: 'entered' | 'skipped' | 'flagged' = 'entered';
+
+    if (action === 'discarded') {
+      poolResult = 'skipped';
+      discardedCount++;
+    } else if (action === 'flagged') {
+      poolResult = 'flagged';
+      flaggedCount++;
+    } else if (action === 'fixed') {
+      poolResult = 'entered';
+      cleanedCount++;
+      fixedData = {
+        ...originalData,
+        phone: issueType === 'missing_phone' ? randomPhone() : originalData.phone,
+        status: issueType === 'invalid_status' ? 'pending' : originalData.status,
+        amount: issueType === 'abnormal_amount' ? Math.abs(Number(originalData.amount)) : originalData.amount,
+      };
+    }
+
+    if (action === 'discarded') {
+      ordersPool = ordersPool.filter((o) => o.id !== order.id);
+      poolOrderIds.delete(order.id);
+    } else {
+      const idx = ordersPool.findIndex((o) => o.id === order.id);
+      if (idx !== -1) {
+        if (action === 'fixed' && fixedData) {
+          if (issueType === 'missing_phone') ordersPool[idx].userPhone = fixedData.phone as string;
+          if (issueType === 'abnormal_amount') ordersPool[idx].amount = fixedData.amount as number;
+          if (issueType === 'invalid_status') ordersPool[idx].status = fixedData.status as Order['status'];
+          ordersPool[idx].dataQuality = 'fixed';
+        } else if (action === 'flagged') {
+          ordersPool[idx].dataQuality = 'dirty';
+        }
+      }
+    }
+
+    mockCleanRecords.unshift({
+      id: randomId('CLEAN'),
+      taskId,
+      orderId: order.id,
+      originalData,
+      issueType,
+      issueDescription: description,
+      action,
+      fixedData,
+      poolResult,
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  return { cleaned: cleanedCount, discarded: discardedCount, flagged: flaggedCount };
+}
 
 router.post(
   '/tasks/:id/trigger',
@@ -79,13 +186,14 @@ router.post(
         if (stepIdx >= progressSteps.length) {
           const currentIdx = mockCollectionTasks.findIndex((t) => t.id === id);
           if (currentIdx !== -1) {
+            const result = performDataCleaning(id);
             mockCollectionTasks[currentIdx] = {
               ...mockCollectionTasks[currentIdx],
               status: 'completed',
               progress: 100,
               collected: mockCollectionTasks[currentIdx].totalRecords,
-              cleaned: Math.floor(mockCollectionTasks[currentIdx].totalRecords * 0.92),
-              discarded: Math.floor(mockCollectionTasks[currentIdx].totalRecords * 0.08),
+              cleaned: mockCollectionTasks[currentIdx].totalRecords - result.discarded - result.flagged,
+              discarded: result.discarded,
               completedAt: new Date().toISOString(),
             };
           }
@@ -250,6 +358,41 @@ router.post(
     } catch (e) {
       const err = e as Error;
       res.status(500).json(error(err.message || '触发失败', 500));
+    }
+  },
+);
+
+router.get(
+  '/clean-records/:id',
+  requireAuth,
+  requirePermissions([PERMISSIONS.COLLECTION_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { id } = req.params;
+      const record = mockCleanRecords.find((r) => r.id === id);
+      if (!record) {
+        res.status(404).json(error('清洗记录不存在', 404));
+        return;
+      }
+
+      const relatedOrder = record.orderId ? ordersPool.find((o) => o.id === record.orderId) : undefined;
+      const poolResultText =
+        record.poolResult === 'entered'
+          ? '已进入中央数据池'
+          : record.poolResult === 'skipped'
+            ? '已丢弃，未入池'
+            : '已入池但标记为脏数据';
+
+      const data: CleanRecord & { relatedOrder?: Order; poolResultText: string } = {
+        ...record,
+        relatedOrder,
+        poolResultText,
+      };
+
+      res.json(success(data, '获取成功'));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '获取失败', 500));
     }
   },
 );

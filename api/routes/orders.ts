@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import type { Order, OrderListResponse, OrderChannel, OrderStatus } from '../../shared/types.js';
 import { PERMISSIONS } from '../../shared/types.js';
 import { success, error, requireAuth, requirePermissions, type AuthRequest, applyDataScope } from '../utils.js';
-import { orders as mockOrders } from '../data/mockData.js';
+import { getOrdersPool } from './collection.js';
 
 const router = Router();
 
@@ -22,7 +22,7 @@ router.get(
       const startTime = req.query.startTime as string | undefined;
       const endTime = req.query.endTime as string | undefined;
 
-      let filtered = applyDataScope(mockOrders, user);
+      let filtered = applyDataScope(getOrdersPool(), user);
 
       if (channel) {
         filtered = filtered.filter((o) => o.channel === channel);
@@ -80,7 +80,7 @@ router.get(
     try {
       const user = (req as AuthRequest).currentUser!;
       const { id } = req.params;
-      const order = mockOrders.find((o) => o.id === id);
+      const order = getOrdersPool().find((o) => o.id === id);
 
       if (!order) {
         res.status(404).json(error('订单不存在', 404));
