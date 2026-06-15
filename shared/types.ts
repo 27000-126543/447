@@ -304,15 +304,41 @@ export type POStatus =
   | 'approved'
   | 'completed';
 
+export interface POItemDiff {
+  skuId: string;
+  skuName: string;
+  field: string;
+  fieldName: string;
+  oldValue: unknown;
+  newValue: unknown;
+  changeType: 'added' | 'removed' | 'modified';
+}
+
+export interface POVersionDiff {
+  fromVersion: number;
+  toVersion: number;
+  itemDiffs: POItemDiff[];
+  summaryDiffs: Array<{
+    field: string;
+    fieldName: string;
+    oldValue: unknown;
+    newValue: unknown;
+    changed: boolean;
+  }>;
+}
+
 export interface ApprovalHistory {
   step: number;
   stepName: string;
   role: string;
   user: string;
   userId: string;
-  action: 'submit' | 'approve' | 'reject' | 'resubmit';
+  action: 'submit' | 'approve' | 'reject' | 'resubmit' | 'transfer' | 'timeout_remind';
   comment?: string;
   rejectedFrom?: number;
+  transferredFrom?: string;
+  transferredTo?: string;
+  versionDiff?: POVersionDiff;
   createdAt: string;
   version: number;
 }
@@ -322,11 +348,13 @@ export interface PurchaseOrder {
   poNo: string;
   items: { skuId: string; skuName: string; quantity: number; unitPrice: number }[];
   totalAmount: number;
+  description?: string;
   status: POStatus;
   statusName: string;
   currentStep: number;
   currentApproverRole?: string;
   currentApprover?: string;
+  currentApproverId?: string;
   version: number;
   rejectionCount: number;
   lastRejectedFrom?: number;
@@ -337,6 +365,11 @@ export interface PurchaseOrder {
   createdById: string;
   creatorRegion?: string;
   expectedDate?: string;
+  versionSnapshots?: Record<number, {
+    items: PurchaseOrder['items'];
+    totalAmount: number;
+    description?: string;
+  }>;
 }
 
 export interface LifecycleDistribution {

@@ -312,13 +312,14 @@ router.post(
           if (stepIdx >= progressSteps.length) {
             const currentIdx = mockCollectionTasks.findIndex((t) => t.id === taskId);
             if (currentIdx !== -1) {
+              const result = performDataCleaning(taskId);
               mockCollectionTasks[currentIdx] = {
                 ...mockCollectionTasks[currentIdx],
                 status: 'completed',
                 progress: 100,
                 collected: totalRecords,
-                cleaned: Math.floor(totalRecords * 0.92),
-                discarded: Math.floor(totalRecords * 0.08),
+                cleaned: totalRecords - result.discarded - result.flagged,
+                discarded: result.discarded,
                 completedAt: new Date().toISOString(),
               };
             }
@@ -381,15 +382,163 @@ router.get(
           ? '已进入中央数据池'
           : record.poolResult === 'skipped'
             ? '已丢弃，未入池'
-            : '已入池但标记为脏数据';
+            : '已入池但标记为脏数据（待人工复核）';
 
-      const data: CleanRecord & { relatedOrder?: Order; poolResultText: string } = {
+      const fieldDiff: Array<{
+        field: string;
+        fieldName: string;
+        originalValue: unknown;
+        cleanedValue: unknown;
+        changed: boolean;
+      }> = [];
+      const fieldNameMap: Record<string, string> = {
+        orderNo: '订单号',
+        userName: '收货人',
+        userPhone: '手机号',
+        amount: '订单金额',
+        status: '订单状态',
+        phone: '手机号',
+      };
+
+      const allKeys = new Set([
+        ...Object.keys(record.originalData || {}),
+        ...Object.keys(record.fixedData || {}),
+      ]);
+      allKeys.forEach((key) => {
+        const orig = record.originalData?.[key];
+        const fixed = record.fixedData?.[key];
+        const changed = JSON.stringify(orig) !== JSON.stringify(fixed);
+        fieldDiff.push({
+          field: key,
+          fieldName: fieldNameMap[key] || key,
+          originalValue: orig,
+          cleanedValue: fixed ?? orig,
+          changed,
+        });
+      });
+
+      const task = mockCollectionTasks.find((t) => t.id === record.taskId);
+
+      const data = {
         ...record,
         relatedOrder,
         poolResultText,
+        fieldDiff,
+        lineage: {
+          source: {
+            channel: task?.channel,
+            channelName: task?.channelName,
+            taskId: record.taskId,
+            rawData: record.originalData,
+          },
+          cleaning: {
+            issueType: record.issueType,
+            issueDescription: record.issueDescription,
+            action: record.action,
+            actionName: record.action === 'discarded' ? '丢弃' : record.action === 'fixed' ? '自动修复' : '标记待人工复核',
+            fieldDiff,
+          },
+          pool: {
+            result: record.poolResult,
+            resultText: poolResultText,
+          },
+          order: relatedOrder
+            ? {
+                id: relatedOrder.id,
+                orderNo: relatedOrder.orderNo,
+                dataQuality: relatedOrder.dataQuality,
+              }
+            : null,
+        },
       };
 
       res.json(success(data, '获取成功'));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '获取失败', 500));
+    }
+  },
+);
+
+router.get(
+  '/data-quality/overview',
+  requireAuth,
+  requirePermissions([PERMISSIONS.COLLECTION_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const channel = req.query.channel as string | undefined;
+      const recentTasks = [...mockCollectionTasks].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ).slice(0, 5);
+
+      const taskIds = recentTasks.map((t) => t.id);
+      const recentRecords = mockCleanRecords.filter((r) => taskIds.includes(r.taskId));
+      const filtered = channel
+        ? recentRecords.filter((r) => {
+            const t = recentTasks.find((tt) => tt.id === r.taskId);
+            return t?.channel === channel;
+          })
+        : recentRecords;
+
+      const stats = {
+        total: filtered.length,
+        entered: filtered.filter((r) => r.poolResult === 'entered').length,
+        skipped: filtered.filter((r) => r.poolResult === 'skipped').length,
+        flagged: filtered.filter((r) => r.poolResult === 'flagged').length,
+        fixed: filtered.filter((r) => r.action === 'fixed').length,
+      };
+
+      const byChannel: Record<string, { entered: number; skipped: number; flagged: number; fixed: number }> = {};
+      recentTasks.forEach((t) => {
+        if (channel && t.channel !== channel) return;
+        const recs = filtered.filter((r) => r.taskId === t.id);
+        byChannel[t.channelName] = {
+          entered: recs.filter((r) => r.poolResult === 'entered').length,
+          skipped: recs.filter((r) => r.poolResult === 'skipped').length,
+          flagged: recs.filter((r) => r.poolResult === 'flagged').length,
+          fixed: recs.filter((r) => r.action === 'fixed').length,
+        };
+      });
+
+      const byTask = recentTasks
+        .filter((t) => !channel || t.channel === channel)
+        .map((t) => {
+          const recs = filtered.filter((r) => r.taskId === t.id);
+          return {
+            taskId: t.id,
+            channel: t.channel,
+            channelName: t.channelName,
+            type: t.type,
+            status: t.status,
+            collected: t.collected,
+            cleaned: t.cleaned,
+            discarded: t.discarded,
+            cleanRecords: recs.length,
+          };
+        });
+
+      res.json(
+        success(
+          {
+            stats,
+            byChannel,
+            byTask,
+            recentTasks: recentTasks.map((t) => ({
+              id: t.id,
+              channel: t.channel,
+              channelName: t.channelName,
+              type: t.type,
+              status: t.status,
+              progress: t.progress,
+              collected: t.collected,
+              cleaned: t.cleaned,
+              discarded: t.discarded,
+              completedAt: t.completedAt,
+            })),
+          },
+          '获取成功',
+        ),
+      );
     } catch (e) {
       const err = e as Error;
       res.status(500).json(error(err.message || '获取失败', 500));

@@ -1,5 +1,12 @@
 import { Router, type Request, type Response } from 'express';
-import type { InventoryForecast, PurchaseOrder, POStatus, ApprovalHistory } from '../../shared/types.js';
+import type {
+  InventoryForecast,
+  PurchaseOrder,
+  POStatus,
+  ApprovalHistory,
+  POVersionDiff,
+  POItemDiff,
+} from '../../shared/types.js';
 import { PERMISSIONS } from '../../shared/types.js';
 import {
   success,
@@ -21,6 +28,7 @@ import {
   canCompletePO,
 } from '../utils.js';
 import { inventoryForecasts, purchaseOrders as mockPurchaseOrders } from '../data/mockData.js';
+import { inboxMessages } from '../data/mockData.js';
 
 const router = Router();
 
@@ -335,6 +343,82 @@ router.post(
   },
 );
 
+function computePOVersionDiff(
+  fromVersion: number,
+  toVersion: number,
+  oldPO: { items: PurchaseOrder['items']; totalAmount: number; description?: string },
+  newPO: { items: PurchaseOrder['items']; totalAmount: number; description?: string },
+): POVersionDiff {
+  const fieldNameMap: Record<string, string> = {
+    quantity: '采购数量',
+    unitPrice: '单价',
+    totalAmount: '总金额',
+    description: '采购说明',
+  };
+
+  const itemDiffs: POItemDiff[] = [];
+  const oldItemMap = new Map(oldPO.items.map((it) => [it.skuId, it]));
+  const newItemMap = new Map(newPO.items.map((it) => [it.skuId, it]));
+
+  oldPO.items.forEach((oldIt) => {
+    const newIt = newItemMap.get(oldIt.skuId);
+    if (!newIt) {
+      itemDiffs.push({
+        skuId: oldIt.skuId,
+        skuName: oldIt.skuName,
+        field: 'item',
+        fieldName: '商品行',
+        oldValue: oldIt,
+        newValue: null,
+        changeType: 'removed',
+      });
+    } else {
+      (['quantity', 'unitPrice'] as const).forEach((f) => {
+        if (oldIt[f] !== newIt[f]) {
+          itemDiffs.push({
+            skuId: oldIt.skuId,
+            skuName: oldIt.skuName,
+            field: f,
+            fieldName: fieldNameMap[f] || f,
+            oldValue: oldIt[f],
+            newValue: newIt[f],
+            changeType: 'modified',
+          });
+        }
+      });
+    }
+  });
+
+  newPO.items.forEach((newIt) => {
+    if (!oldItemMap.has(newIt.skuId)) {
+      itemDiffs.push({
+        skuId: newIt.skuId,
+        skuName: newIt.skuName,
+        field: 'item',
+        fieldName: '商品行',
+        oldValue: null,
+        newValue: newIt,
+        changeType: 'added',
+      });
+    }
+  });
+
+  const summaryDiffs: POVersionDiff['summaryDiffs'] = [];
+  (['totalAmount', 'description'] as const).forEach((f) => {
+    const ov = oldPO[f];
+    const nv = newPO[f];
+    summaryDiffs.push({
+      field: f,
+      fieldName: fieldNameMap[f] || f,
+      oldValue: ov ?? null,
+      newValue: nv ?? null,
+      changed: JSON.stringify(ov ?? null) !== JSON.stringify(nv ?? null),
+    });
+  });
+
+  return { fromVersion, toVersion, itemDiffs, summaryDiffs };
+}
+
 router.post(
   '/purchase/:id/resubmit',
   requireAuth,
@@ -343,7 +427,15 @@ router.post(
     try {
       const user = (req as AuthRequest).currentUser!;
       const { id } = req.params;
-      const { comment } = req.body as { comment?: string };
+      const {
+        comment,
+        items,
+        description,
+      } = req.body as {
+        comment?: string;
+        items?: PurchaseOrder['items'];
+        description?: string;
+      };
 
       const idx = mockPurchaseOrders.findIndex((p) => p.id === id);
       if (idx === -1) {
@@ -365,12 +457,43 @@ router.post(
         .pop();
       const rejectedFrom = lastRejection?.rejectedFrom || po.lastRejectedFrom || 1;
 
+      const oldSnapshot = {
+        items: [...po.items],
+        totalAmount: po.totalAmount,
+        description: po.description,
+      };
+
+      if (items && Array.isArray(items)) {
+        po.items = items;
+        po.totalAmount = items.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0);
+      }
+      if (description !== undefined) {
+        po.description = description;
+      }
+
+      po.versionSnapshots = {
+        ...(po.versionSnapshots || {}),
+        [prevVersion]: oldSnapshot,
+        [newVersion]: {
+          items: [...po.items],
+          totalAmount: po.totalAmount,
+          description: po.description,
+        },
+      };
+
+      const versionDiff = computePOVersionDiff(prevVersion, newVersion, oldSnapshot, {
+        items: po.items,
+        totalAmount: po.totalAmount,
+        description: po.description,
+      });
+
       po.version = newVersion;
       po.status = 'finance_pending';
       po.statusName = getPOStatusName('finance_pending');
       po.currentStep = getCurrentStep('finance_pending');
       po.currentApproverRole = getApproverRole('finance_pending');
       po.currentApprover = '赵雅琴';
+      po.currentApproverId = 'U004';
       po.lastRejectedFrom = undefined;
       po.lastRejectionComment = undefined;
 
@@ -383,6 +506,7 @@ router.post(
         action: 'resubmit',
         comment: comment || `第${newVersion}版重新提交，已修改问题`,
         rejectedFrom: rejectedFrom,
+        versionDiff,
         createdAt: new Date().toISOString(),
         version: newVersion,
       };
@@ -449,6 +573,215 @@ router.post(
     } catch (e) {
       const err = e as Error;
       res.status(500).json(error(err.message || '完成失败', 500));
+    }
+  },
+);
+
+router.get(
+  '/purchase/:id/version-diff',
+  requireAuth,
+  requirePermissions([PERMISSIONS.PURCHASE_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const user = (req as AuthRequest).currentUser!;
+      const { id } = req.params;
+      const from = Number(req.query.from) || 1;
+      const to = Number(req.query.to) || 2;
+
+      const idx = mockPurchaseOrders.findIndex((p) => p.id === id);
+      if (idx === -1) {
+        res.status(404).json(error('采购单不存在', 404));
+        return;
+      }
+
+      const po = mockPurchaseOrders[idx];
+
+      const filteredPOs = applyDataScope([po], user);
+      if (filteredPOs.length === 0) {
+        res.status(403).json(error('无权限查看此采购单', 403));
+        return;
+      }
+
+      const findVersionSnapshot = (ver: number) => {
+        if (po.versionSnapshots && po.versionSnapshots[ver]) {
+          return po.versionSnapshots[ver];
+        }
+        const historyAtVersion = po.approvalHistory.find((h) => h.version === ver && h.versionDiff);
+        if (historyAtVersion?.versionDiff && ver === historyAtVersion.versionDiff.toVersion) {
+          return null;
+        }
+        return null;
+      };
+
+      let fromSnapshot = findVersionSnapshot(from);
+      let toSnapshot = findVersionSnapshot(to);
+
+      if (!fromSnapshot || !toSnapshot) {
+        const resubmitHistory = po.approvalHistory
+          .filter((h) => h.action === 'resubmit' && h.versionDiff)
+          .find((h) => h.versionDiff!.fromVersion === from && h.versionDiff!.toVersion === to);
+        if (resubmitHistory?.versionDiff) {
+          res.json(
+            success(
+              {
+                poId: po.id,
+                poNo: po.poNo,
+                diff: resubmitHistory.versionDiff,
+              },
+              '获取成功',
+            ),
+          );
+          return;
+        }
+        fromSnapshot = fromSnapshot || {
+          items: po.items,
+          totalAmount: po.totalAmount,
+          description: po.description,
+        };
+        toSnapshot = toSnapshot || {
+          items: po.items,
+          totalAmount: po.totalAmount,
+          description: po.description,
+        };
+      }
+
+      const diff = computePOVersionDiff(from, to, fromSnapshot, toSnapshot);
+
+      res.json(
+        success(
+          {
+            poId: po.id,
+            poNo: po.poNo,
+            diff,
+          },
+          '获取成功',
+        ),
+      );
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '获取失败', 500));
+    }
+  },
+);
+
+router.post(
+  '/purchase/:id/transfer',
+  requireAuth,
+  requirePermissions([PERMISSIONS.INVENTORY_EDIT]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const user = (req as AuthRequest).currentUser!;
+      const { id } = req.params;
+      const {
+        toUserId,
+        toUserName,
+        comment,
+      } = req.body as { toUserId: string; toUserName: string; comment?: string };
+
+      const idx = mockPurchaseOrders.findIndex((p) => p.id === id);
+      if (idx === -1) {
+        res.status(404).json(error('采购单不存在', 404));
+        return;
+      }
+
+      const po = { ...mockPurchaseOrders[idx] };
+
+      if (!['finance_pending', 'warehouse_pending'].includes(po.status)) {
+        res.status(400).json(error('仅待审批状态的采购单可转交', 400));
+        return;
+      }
+
+      const transferStep = po.currentStep;
+      const fromUserName = po.currentApprover || user.name;
+      const fromUserId = po.currentApproverId || user.id;
+
+      po.currentApprover = toUserName;
+      po.currentApproverId = toUserId;
+
+      const transferHistory: ApprovalHistory = {
+        step: transferStep,
+        stepName: getStepName(transferStep),
+        role: user.roleName,
+        user: user.name,
+        userId: user.id,
+        action: 'transfer',
+        comment: comment || `转交审批：${fromUserName} → ${toUserName}`,
+        transferredFrom: fromUserName,
+        transferredTo: toUserName,
+        createdAt: new Date().toISOString(),
+        version: po.version,
+      };
+
+      po.approvalHistory = [...po.approvalHistory, transferHistory];
+
+      mockPurchaseOrders[idx] = po;
+
+      res.json(success(po, `已转交给 ${toUserName}`));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '转交失败', 500));
+    }
+  },
+);
+
+router.post(
+  '/purchase/:id/timeout-remind',
+  requireAuth,
+  requirePermissions([PERMISSIONS.PURCHASE_VIEW]),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const user = (req as AuthRequest).currentUser!;
+      const { id } = req.params;
+      const { timeoutHours = 24 } = req.body as { timeoutHours?: number };
+
+      const idx = mockPurchaseOrders.findIndex((p) => p.id === id);
+      if (idx === -1) {
+        res.status(404).json(error('采购单不存在', 404));
+        return;
+      }
+
+      const po = { ...mockPurchaseOrders[idx] };
+
+      if (!['finance_pending', 'warehouse_pending'].includes(po.status)) {
+        res.status(400).json(error('仅待审批状态的采购单可触发超时提醒', 400));
+        return;
+      }
+
+      const timeoutStep = po.currentStep;
+      const timeoutStepName = getStepName(timeoutStep);
+
+      const remindHistory: ApprovalHistory = {
+        step: timeoutStep,
+        stepName: timeoutStepName,
+        role: user.roleName,
+        user: user.name,
+        userId: user.id,
+        action: 'timeout_remind',
+        comment: `${timeoutStepName}已超过${timeoutHours}小时未处理，请尽快审批`,
+        createdAt: new Date().toISOString(),
+        version: po.version,
+      };
+
+      po.approvalHistory = [...po.approvalHistory, remindHistory];
+
+      inboxMessages.unshift({
+        id: `NOTIF_${Date.now()}`,
+        type: 'alert',
+        title: `采购单超时提醒 - ${po.poNo}`,
+        content: `采购单【${po.poNo}】在${timeoutStepName}节点已超时${timeoutHours}小时，请及时处理`,
+        read: false,
+        userId: po.currentApproverId || '',
+        relatedId: po.id,
+        relatedType: 'purchase_order',
+        createdAt: new Date().toISOString(),
+      });
+
+      mockPurchaseOrders[idx] = po;
+
+      res.json(success(po, '超时提醒已发送'));
+    } catch (e) {
+      const err = e as Error;
+      res.status(500).json(error(err.message || '提醒失败', 500));
     }
   },
 );
