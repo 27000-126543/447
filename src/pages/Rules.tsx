@@ -3,7 +3,8 @@ import {
   Plus, Search, Edit, Play, Trash2,
   Clock, Zap, AlertTriangle, Tag,
   ChevronDown, ChevronRight, PlusCircle, X,
-  Gauge, Calendar, Activity, ArrowRight
+  Gauge, Calendar, Activity, ArrowRight,
+  Bell,
 } from 'lucide-react'
 import Modal from '@/components/Modal'
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -11,6 +12,8 @@ import LoadingSpinner from '@/components/LoadingSpinner'
 import { api } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { usePermission } from '@/lib/permissions'
+import { PERMISSIONS } from '@shared/types'
 import type { RuleConfig, RuleCondition, RuleAction } from '@shared/types'
 
 interface RuleListResponse {
@@ -25,6 +28,7 @@ const categoryTabs = [
   { key: 'pricing', label: '自动调价' },
   { key: 'replenish', label: '自动补货' },
   { key: 'reconcile', label: '自动对账' },
+  { key: 'alert', label: '异常告警' },
   { key: 'other', label: '其他' },
 ] as const
 
@@ -32,8 +36,16 @@ const categoryMap: Record<string, { label: string; className: string; icon: type
   pricing: { label: '自动调价', className: 'bg-blue-500/15 text-blue-400 border border-blue-500/30', icon: Gauge },
   replenish: { label: '自动补货', className: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30', icon: Activity },
   reconcile: { label: '自动对账', className: 'bg-purple-500/15 text-purple-400 border border-purple-500/30', icon: Calendar },
+  alert: { label: '异常告警', className: 'bg-rose-500/15 text-rose-400 border border-rose-500/30', icon: Bell },
   other: { label: '其他', className: 'bg-slate-500/15 text-slate-400 border border-slate-500/30', icon: Tag },
 }
+
+const alertDefaultConditions = [
+  { label: '单渠道成交暴跌超过30%', field: 'channel_gmv_drop', operator: 'gt', value: 30 },
+  { label: '库存低于安全水位', field: 'stock_below_safe', operator: 'lt', value: 0 },
+  { label: '退款率超过5%', field: 'refund_rate', operator: 'gt', value: 5 },
+  { label: '订单量突增超过50%', field: 'order_volume_surge', operator: 'gt', value: 50 },
+]
 
 const triggerTypeMap: Record<string, { label: string; icon: typeof Clock }> = {
   schedule: { label: '定时触发', icon: Clock },
@@ -57,6 +69,9 @@ const fieldOptions = [
   { key: 'user_level', label: '用户等级' },
   { key: 'product_price', label: '商品价格' },
   { key: 'refund_rate', label: '退款率' },
+  { key: 'channel_gmv_drop', label: '渠道GMV跌幅(%)' },
+  { key: 'stock_below_safe', label: '库存安全水位' },
+  { key: 'order_volume_surge', label: '订单量增幅(%)' },
 ]
 
 const actionTypeOptions = [
@@ -77,6 +92,10 @@ export default function Rules() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null)
   const [testRunning, setTestRunning] = useState(false)
+
+  const canCreate = usePermission(PERMISSIONS.RULES_CREATE)
+  const canEdit = usePermission(PERMISSIONS.RULES_EDIT)
+  const canDelete = usePermission(PERMISSIONS.RULES_DELETE)
 
   const [formData, setFormData] = useState<Partial<RuleConfig>>({
     name: '',
@@ -232,13 +251,15 @@ export default function Rules() {
           <h1 className="text-2xl font-display font-bold text-white">规则引擎配置</h1>
           <p className="text-slate-400 text-sm mt-1">图形化配置业务自动化规则</p>
         </div>
-        <button
-          onClick={handleCreate}
-          className="btn-primary flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" />
-          新建规则
-        </button>
+        {canCreate && (
+          <button
+            onClick={handleCreate}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            新建规则
+          </button>
+        )}
       </div>
 
       <div className="glass-card p-4">
@@ -374,13 +395,15 @@ export default function Rules() {
               <div className="flex items-center justify-between pt-3 border-t border-slate-700/50">
                 <span className="text-xs text-slate-500">最近运行: {formatRelativeTime(rule.updatedAt)}</span>
                 <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => handleEdit(rule)}
-                    className="btn-ghost text-xs px-2 py-1"
-                  >
-                    <Edit className="w-3.5 h-3.5 mr-1" />
-                    编辑
-                  </button>
+                  {canEdit && (
+                    <button
+                      onClick={() => handleEdit(rule)}
+                      className="btn-ghost text-xs px-2 py-1"
+                    >
+                      <Edit className="w-3.5 h-3.5 mr-1" />
+                      编辑
+                    </button>
+                  )}
                   <button
                     onClick={() => { setTestRunning(true); setTimeout(() => setTestRunning(false), 2000) }}
                     className="btn-ghost text-xs px-2 py-1 text-emerald-400"
@@ -388,13 +411,15 @@ export default function Rules() {
                     <Play className="w-3.5 h-3.5 mr-1" />
                     测试
                   </button>
-                  <button
-                    onClick={() => { setDeletingRuleId(rule.id); setShowDeleteDialog(true) }}
-                    className="btn-ghost text-xs px-2 py-1 text-rose-400"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 mr-1" />
-                    删除
-                  </button>
+                  {canDelete && (
+                    <button
+                      onClick={() => { setDeletingRuleId(rule.id); setShowDeleteDialog(true) }}
+                      className="btn-ghost text-xs px-2 py-1 text-rose-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1" />
+                      删除
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -544,13 +569,40 @@ export default function Rules() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <label className="block text-sm font-medium text-slate-300">条件配置</label>
-              <button
-                onClick={addCondition}
-                className="btn-ghost text-xs py-1 text-accent-400"
-              >
-                <PlusCircle className="w-3.5 h-3.5 mr-1" />
-                添加条件
-              </button>
+              <div className="flex items-center gap-2">
+                {formData.category === 'alert' && (
+                  <select
+                    onChange={(e) => {
+                      const idx = parseInt(e.target.value)
+                      if (!isNaN(idx)) {
+                        const cond = alertDefaultConditions[idx]
+                        const newCondition: RuleCondition = {
+                          id: `cond-${Date.now()}`,
+                          field: cond.field,
+                          operator: cond.operator as RuleCondition['operator'],
+                          value: cond.value,
+                        }
+                        setFormData(prev => ({ ...prev, conditions: [...(prev.conditions || []), newCondition] }))
+                      }
+                      e.target.value = ''
+                    }}
+                    className="input-field text-xs py-1.5 h-auto"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>快速添加告警条件</option>
+                    {alertDefaultConditions.map((cond, idx) => (
+                      <option key={idx} value={idx}>{cond.label}</option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  onClick={addCondition}
+                  className="btn-ghost text-xs py-1 text-accent-400"
+                >
+                  <PlusCircle className="w-3.5 h-3.5 mr-1" />
+                  添加条件
+                </button>
+              </div>
             </div>
 
             {(formData.conditions || []).length === 0 ? (

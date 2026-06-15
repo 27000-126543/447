@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -14,9 +14,13 @@ import {
   Box,
   MapPin,
   LogOut,
+  Database,
+  Bell,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { cn } from '@/lib/utils';
+import { filterMenuByRole } from '@/lib/permissions';
+import { ROLE_MENU_ACCESS } from '@shared/types';
 
 interface MenuItem {
   path: string;
@@ -56,6 +60,8 @@ const menuItems: MenuItem[] = [
     ],
   },
   { path: '/rules', label: '规则引擎', icon: Workflow },
+  { path: '/data-collection', label: '数据采集', icon: Database },
+  { path: '/notifications', label: '消息中心', icon: Bell },
   {
     path: '/settings',
     label: '系统设置',
@@ -78,6 +84,10 @@ export default function Sidebar() {
     '/marketing',
     '/settings',
   ]);
+
+  const filteredMenuItems = useMemo(() => {
+    return filterMenuByRole(menuItems);
+  }, [user]);
 
   const toggleMenu = (path: string) => {
     setExpandedMenus((prev) =>
@@ -122,7 +132,7 @@ export default function Sidebar() {
 
       <nav className="flex-1 overflow-y-auto py-4 px-3 scrollbar-thin">
         <div className="space-y-1">
-          {menuItems.map((item) => {
+          {filteredMenuItems.map((item) => {
             const Icon = item.icon;
             const hasChildren = item.children && item.children.length > 0;
             const isExpanded = expandedMenus.includes(item.path);

@@ -16,6 +16,8 @@ import marketingRoutes from './routes/marketing.js'
 import recommendationRoutes from './routes/recommendation.js'
 import rulesRoutes from './routes/rules.js'
 import settingsRoutes from './routes/settings.js'
+import notificationsRoutes from './routes/notifications.js'
+import collectionRoutes from './routes/collection.js'
 import { authMiddleware } from './utils.js'
 
 dotenv.config()
@@ -38,6 +40,8 @@ app.use('/api/marketing', marketingRoutes)
 app.use('/api/recommendation', recommendationRoutes)
 app.use('/api/rules', rulesRoutes)
 app.use('/api/settings', settingsRoutes)
+app.use('/api/notifications', notificationsRoutes)
+app.use('/api/collection', collectionRoutes)
 
 /**
  * health

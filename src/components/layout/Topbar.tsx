@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Menu,
@@ -9,9 +9,15 @@ import {
   LogOut,
   Shield,
   MapPin,
+  AlertTriangle,
+  FileCheck,
+  Info,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
+import { formatRelativeTime } from '@/lib/format';
+import type { InboxMessage } from '@shared/types';
 
 interface Breadcrumb {
   label: string;
@@ -46,6 +52,8 @@ const breadcrumbMap: Record<string, Breadcrumb[]> = {
     { label: '自动化流程' },
   ],
   '/rules': [{ label: '规则引擎' }],
+  '/data-collection': [{ label: '数据采集' }],
+  '/notifications': [{ label: '消息中心' }],
   '/settings/permissions': [
     { label: '系统设置', path: '/settings/permissions' },
     { label: '权限管理' },
@@ -63,13 +71,66 @@ export default function Topbar() {
   const logout = useAuthStore((s) => s.logout);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<InboxMessage[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
 
   const breadcrumbs = breadcrumbMap[location.pathname] || [
     { label: '首页' },
   ];
-  const alertCount = 3;
+
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await api.get<{ list: InboxMessage[]; unreadCount: number }>('/notifications/inbox?limit=5&unreadOnly=true');
+      if (res.data) {
+        setNotifications(res.data.list || []);
+        setUnreadCount(res.data.unreadCount || 0);
+      }
+    } catch (e) {
+      console.error('Failed to fetch notifications:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 30000);
+    return () => clearInterval(interval);
+  }, [fetchNotifications]);
+
+  const markAsRead = async (id: string) => {
+    try {
+      await api.post(`/notifications/inbox/${id}/read`);
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (e) {
+      console.error('Failed to mark notification as read:', e);
+    }
+  };
+
+  const handleNotificationClick = (msg: InboxMessage) => {
+    if (!msg.read) {
+      markAsRead(msg.id);
+    }
+    setShowNotifications(false);
+    navigate('/notifications');
+  };
+
+  const getNotifIcon = (type: string) => {
+    switch (type) {
+      case 'alert': return <AlertTriangle className="w-4 h-4 text-danger" />;
+      case 'approval': return <FileCheck className="w-4 h-4 text-accent-400" />;
+      default: return <Info className="w-4 h-4 text-info" />;
+    }
+  };
+
+  const getNotifDotClass = (type: string) => {
+    switch (type) {
+      case 'alert': return 'bg-danger';
+      case 'approval': return 'bg-accent-500';
+      default: return 'bg-info';
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -133,9 +194,9 @@ export default function Topbar() {
               className="btn-ghost p-2.5 relative"
             >
               <Bell className="w-5 h-5" />
-              {alertCount > 0 && (
+              {unreadCount > 0 && (
                 <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-danger text-white text-[10px] font-medium rounded-full flex items-center justify-center animate-glow-pulse">
-                  {alertCount}
+                  {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
             </button>
@@ -144,41 +205,56 @@ export default function Topbar() {
               <div className="absolute right-0 top-full mt-2 w-80 glass-card p-2 shadow-card animate-fade-in">
                 <div className="px-3 py-2 border-b border-slate-800 mb-1">
                   <h3 className="text-sm font-medium text-white">
-                    系统告警 ({alertCount})
+                    未读消息 ({unreadCount})
                   </h3>
                 </div>
                 <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin">
-                  {[1, 2, 3].map((i) => (
-                    <div
-                      key={i}
-                      className="px-3 py-2.5 rounded-lg hover:bg-slate-800/50 cursor-pointer transition-colors"
-                    >
-                      <div className="flex items-start gap-2">
-                        <span
-                          className={cn(
-                            'w-2 h-2 rounded-full mt-1.5 flex-shrink-0',
-                            i === 1 ? 'bg-danger' : i === 2 ? 'bg-warning' : 'bg-info'
-                          )}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-white truncate">
-                            {i === 1
-                              ? '库存预警：SKU-2048 库存低于安全线'
-                              : i === 2
-                              ? '订单异常：近1小时退款率上升'
-                              : '系统提示：月度报表已生成'}
-                          </p>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            {i === 1 ? '2分钟前' : i === 2 ? '15分钟前' : '1小时前'}
-                          </p>
+                  {notifications.length === 0 ? (
+                    <div className="px-3 py-8 text-center">
+                      <p className="text-sm text-slate-500">暂无未读消息</p>
+                    </div>
+                  ) : (
+                    notifications.map((msg) => (
+                      <div
+                        key={msg.id}
+                        onClick={() => handleNotificationClick(msg)}
+                        className="px-3 py-2.5 rounded-lg hover:bg-slate-800/50 cursor-pointer transition-colors"
+                      >
+                        <div className="flex items-start gap-2">
+                          <span
+                            className={cn(
+                              'w-2 h-2 rounded-full mt-1.5 flex-shrink-0',
+                              getNotifDotClass(msg.type)
+                            )}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              {getNotifIcon(msg.type)}
+                              <p className="text-sm text-white font-medium truncate">
+                                {msg.title}
+                              </p>
+                            </div>
+                            <p className="text-xs text-slate-400 line-clamp-2">
+                              {msg.content}
+                            </p>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {formatRelativeTime(msg.createdAt)}
+                            </p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
                 <div className="px-3 py-2 border-t border-slate-800 mt-1">
-                  <button className="w-full text-sm text-accent-400 hover:text-accent-300 transition-colors">
-                    查看全部告警
+                  <button
+                    onClick={() => {
+                      setShowNotifications(false);
+                      navigate('/notifications');
+                    }}
+                    className="w-full text-sm text-accent-400 hover:text-accent-300 transition-colors"
+                  >
+                    查看全部消息
                   </button>
                 </div>
               </div>

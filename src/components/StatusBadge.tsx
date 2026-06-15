@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 
 type OrderStatus = 'pending' | 'paid' | 'shipped' | 'completed' | 'refunded' | 'cancelled'
-type POStatus = 'draft' | 'finance_pending' | 'warehouse_pending' | 'approved' | 'rejected' | 'completed'
+type POStatus = 'draft' | 'finance_pending' | 'finance_rejected' | 'warehouse_pending' | 'warehouse_rejected' | 'approved' | 'rejected' | 'completed'
 type AlertLevel = 'critical' | 'warning' | 'info'
 type ActivityStatus = 'draft' | 'running' | 'paused' | 'completed'
 
@@ -57,10 +57,20 @@ const poStatusMap: Record<POStatus, { label: string; className: string; dotClass
     className: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
     dotClass: 'bg-amber-400',
   },
+  finance_rejected: {
+    label: '财务已驳回',
+    className: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+    dotClass: 'bg-rose-400',
+  },
   warehouse_pending: {
     label: '仓库审核中',
     className: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
     dotClass: 'bg-blue-400',
+  },
+  warehouse_rejected: {
+    label: '仓库已驳回',
+    className: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+    dotClass: 'bg-rose-400',
   },
   approved: {
     label: '已通过',

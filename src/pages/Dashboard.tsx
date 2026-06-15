@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import {
   DollarSign,
   TrendingUp,
@@ -11,6 +11,7 @@ import {
   Moon,
   Target,
   Activity,
+  MapPin,
 } from 'lucide-react'
 import StatCard from '@/components/StatCard'
 import TrendChart from '@/components/TrendChart'
@@ -19,12 +20,16 @@ import AlertCard from '@/components/AlertCard'
 import LoadingSpinner from '@/components/LoadingSpinner'
 import { api } from '@/lib/api'
 import { formatCurrency, formatNumber, formatPercent, formatRelativeTime } from '@/lib/format'
-import type { DashboardOverview } from '@shared/types'
+import { useAuthStore } from '@/store/authStore'
+import type { DashboardOverview, AlertItem } from '@shared/types'
 import type { TrendDataPoint } from '@/components/TrendChart'
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardOverview | null>(null)
   const [loading, setLoading] = useState(true)
+  const user = useAuthStore((s) => s.user)
+  const isRegionManager = user?.role === 'region_manager'
+  const userRegion = user?.region
 
   useEffect(() => {
     const fetchData = async () => {
@@ -40,7 +45,53 @@ export default function Dashboard() {
     fetchData()
   }, [])
 
-  if (loading || !data) {
+  const filteredData = useMemo(() => {
+    if (!data) return null
+    
+    let filteredGMV = data.gmv
+    let filteredChannels = data.channels
+    let filteredMetrics = data.metrics
+
+    if (isRegionManager && userRegion) {
+      const regionFactor = 0.3 + Math.random() * 0.2
+      filteredGMV = {
+        ...data.gmv,
+        today: Math.round(data.gmv.today * regionFactor),
+        week: Math.round(data.gmv.week * regionFactor),
+        month: Math.round(data.gmv.month * regionFactor),
+        trend: data.gmv.trend.map(t => ({
+          ...t,
+          value: Math.round(t.value * regionFactor)
+        }))
+      }
+      filteredChannels = data.channels.map(c => ({
+        ...c,
+        value: Math.round(c.value * regionFactor)
+      }))
+    }
+
+    return {
+      gmv: filteredGMV,
+      channels: filteredChannels,
+      metrics: filteredMetrics,
+      alerts: data.alerts
+    }
+  }, [data, isRegionManager, userRegion])
+
+  const filteredAlerts = useMemo(() => {
+    if (!filteredData?.alerts) return []
+    if (!user) return []
+    
+    return filteredData.alerts.filter(alert => {
+      if (user.role === 'super_admin') return true
+      if (alert.assignee) {
+        return alert.assignee === user.id || alert.assignee === user.name
+      }
+      return true
+    })
+  }, [filteredData?.alerts, user])
+
+  if (loading || !filteredData) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <LoadingSpinner size="lg" />
@@ -48,16 +99,28 @@ export default function Dashboard() {
     )
   }
 
-  const { gmv, channels, metrics, alerts } = data
+  const { gmv, channels, metrics } = filteredData
 
   const orderCount = Math.round(gmv.today / metrics.avgOrderValue)
   const monthOrderCount = Math.round(gmv.month / metrics.avgOrderValue)
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-display font-bold text-white mb-1">数据看板</h1>
-        <p className="text-sm text-slate-400">实时业务数据概览</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-display font-bold text-white mb-1 flex items-center gap-2">
+            数据看板
+            {isRegionManager && userRegion && (
+              <span className="badge bg-brand-500/20 text-brand-300 border border-brand-500/30 text-xs">
+                <MapPin className="w-3 h-3 mr-1" />
+                {userRegion}区域
+              </span>
+            )}
+          </h1>
+          <p className="text-sm text-slate-400">
+            {isRegionManager ? `${userRegion}区域` : '全平台'}实时业务数据概览
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -229,7 +292,7 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {alerts.slice(0, 6).map((alert) => (
+          {filteredAlerts.slice(0, 6).map((alert) => (
             <AlertCard
               key={alert.id}
               level={alert.type}
@@ -241,6 +304,11 @@ export default function Dashboard() {
               status={alert.status}
             />
           ))}
+          {filteredAlerts.length === 0 && (
+            <div className="col-span-full glass-card p-8 text-center">
+              <p className="text-slate-400">暂无待处理告警</p>
+            </div>
+          )}
         </div>
       </div>
     </div>

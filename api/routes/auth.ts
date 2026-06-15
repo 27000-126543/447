@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import type { User } from '../../shared/types.js';
+import { ROLE_PERMISSIONS, ROLE_DATA_SCOPES } from '../../shared/types.js';
 import { success, error, generateToken, removeToken, parseAuthToken } from '../utils.js';
 import { users } from '../data/mockData.js';
 
@@ -27,7 +28,13 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 
     const userData = { ...userRecord };
     delete (userData as { password?: string }).password;
-    const user = userData as User;
+
+    const user: User = {
+      ...userData,
+      permissions: ROLE_PERMISSIONS[userData.role],
+      dataScope: ROLE_DATA_SCOPES[userData.role],
+    } as User;
+
     const token = generateToken(user);
 
     res.json(

@@ -5,7 +5,7 @@ import Pagination from './Pagination'
 
 export interface Column<T> {
   key: string
-  title: string
+  title: ReactNode
   dataIndex?: keyof T
   render?: (record: T, index: number) => ReactNode
   width?: string | number

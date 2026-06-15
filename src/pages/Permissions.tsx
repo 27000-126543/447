@@ -8,7 +8,7 @@ import {
 import LoadingSpinner from '@/components/LoadingSpinner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { PermissionRole } from '@shared/types'
+import type { PermissionRole, PermissionKey } from '@shared/types'
 
 interface PermissionModule {
   key: string
@@ -171,7 +171,7 @@ export default function Permissions() {
   }
 
   const getModulePermissions = (module: PermissionModule) => {
-    return module.children.map(c => c.key)
+    return module.children.map(c => c.key as PermissionKey)
   }
 
   const isModuleAllChecked = (module: PermissionModule) => {
@@ -204,11 +204,11 @@ export default function Permissions() {
   const toggleSinglePermission = (permKey: string) => {
     setEditingRole(prev => {
       const perms = [...(prev.permissions || [])]
-      const idx = perms.indexOf(permKey)
+      const idx = perms.indexOf(permKey as PermissionKey)
       if (idx > -1) {
         perms.splice(idx, 1)
       } else {
-        perms.push(permKey)
+        perms.push(permKey as PermissionKey)
       }
       return { ...prev, permissions: perms }
     })
@@ -399,7 +399,7 @@ export default function Permissions() {
                           </div>
                           <span className="text-sm font-medium text-white flex-1">{module.label}</span>
                           <span className="text-xs text-slate-500">
-                            {module.children.filter(c => editingRole.permissions?.includes(c.key)).length} / {module.children.length}
+                            {module.children.filter(c => editingRole.permissions?.includes(c.key as PermissionKey)).length} / {module.children.length}
                           </span>
                           {expanded ? (
                             <ChevronDown className="w-4 h-4 text-slate-400" />
@@ -412,7 +412,7 @@ export default function Permissions() {
                           <div className="px-4 py-3 border-t border-slate-700/50">
                             <div className="flex flex-wrap gap-2">
                               {module.children.map(child => {
-                                const checked = editingRole.permissions?.includes(child.key)
+                                const checked = editingRole.permissions?.includes(child.key as PermissionKey)
                                 return (
                                   <button
                                     key={child.key}

@@ -20,7 +20,13 @@ import type {
   RecommendationMetrics,
   RuleConfig,
   PermissionRole,
+  InboxMessage,
+  SmsRecord,
+  DataCollectionTask,
+  CleanRecord,
 } from '../../shared/types.js';
+import { ROLE_PERMISSIONS, ROLE_DATA_SCOPES, PERMISSIONS } from '../../shared/types.js';
+import { generateApprovalHistory, getPOStatusName, getCurrentStep, getApproverRole } from '../utils.js';
 
 const CHANNELS: OrderChannel[] = ['self', 'social', 'distributor'];
 const CHANNEL_NAMES: Record<OrderChannel, string> = {
@@ -117,22 +123,19 @@ export const mockUsers: User[] = [
     name: '陈志远',
     role: 'super_admin',
     roleName: '超级管理员',
-    permissions: [
-      'user:manage', 'order:view', 'order:edit', 'inventory:view', 'inventory:edit',
-      'purchase:approve', 'marketing:manage', 'system:config', 'report:view', 'audit:view',
-    ],
+    permissions: ROLE_PERMISSIONS.super_admin,
+    dataScope: ROLE_DATA_SCOPES.super_admin,
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=admin',
   },
   {
     id: 'U002',
-    username: 'region_manager',
+    username: 'region',
     name: '李慧敏',
     role: 'region_manager',
     roleName: '区域经理',
     region: '华东',
-    permissions: [
-      'order:view', 'order:edit', 'inventory:view', 'report:view',
-    ],
+    permissions: ROLE_PERMISSIONS.region_manager,
+    dataScope: ROLE_DATA_SCOPES.region_manager,
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=manager',
   },
   {
@@ -142,9 +145,8 @@ export const mockUsers: User[] = [
     role: 'operator',
     roleName: '运营专员',
     region: '华南',
-    permissions: [
-      'order:view', 'inventory:view', 'marketing:manage', 'report:view',
-    ],
+    permissions: ROLE_PERMISSIONS.operator,
+    dataScope: ROLE_DATA_SCOPES.operator,
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=operator',
   },
   {
@@ -153,9 +155,8 @@ export const mockUsers: User[] = [
     name: '赵雅琴',
     role: 'finance',
     roleName: '财务',
-    permissions: [
-      'order:view', 'purchase:approve', 'report:view', 'reconcile:view',
-    ],
+    permissions: ROLE_PERMISSIONS.finance,
+    dataScope: ROLE_DATA_SCOPES.finance,
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=finance',
   },
   {
@@ -164,9 +165,8 @@ export const mockUsers: User[] = [
     name: '刘国强',
     role: 'warehouse',
     roleName: '仓储管理员',
-    permissions: [
-      'inventory:view', 'inventory:edit', 'purchase:approve', 'order:view',
-    ],
+    permissions: ROLE_PERMISSIONS.warehouse,
+    dataScope: ROLE_DATA_SCOPES.warehouse,
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=warehouse',
   },
 ];
@@ -339,101 +339,12 @@ export function generateInventoryForecast(count: number): InventoryForecast[] {
 
 export const mockInventoryForecast: InventoryForecast[] = generateInventoryForecast(220);
 
-function generateApprovalHistory(status: POStatus, createdBy: string): ApprovalHistory[] {
-  const history: ApprovalHistory[] = [];
-  const baseDate = new Date();
-  baseDate.setDate(baseDate.getDate() - randomInt(1, 15));
-  let version = 1;
-  history.push({
-    step: 1,
-    role: '运营专员',
-    user: createdBy,
-    action: 'submit',
-    comment: '提交采购申请',
-    createdAt: baseDate.toISOString(),
-    version,
-  });
-  if (status !== 'draft') {
-    version++;
-    baseDate.setHours(baseDate.getHours() + randomInt(2, 8));
-    history.push({
-      step: 2,
-      role: '财务',
-      user: '赵雅琴',
-      action: 'approve',
-      comment: '财务审核通过',
-      createdAt: baseDate.toISOString(),
-      version,
-    });
-  }
-  if (status === 'warehouse_pending' || status === 'approved' || status === 'completed') {
-    version++;
-    baseDate.setHours(baseDate.getHours() + randomInt(2, 8));
-    history.push({
-      step: 3,
-      role: '仓储管理员',
-      user: '刘国强',
-      action: 'approve',
-      comment: '仓储确认收货安排',
-      createdAt: baseDate.toISOString(),
-      version,
-    });
-  }
-  if (status === 'rejected') {
-    const maxRejectStep = history.length;
-    const rejectStep = maxRejectStep >= 2 ? randomChoice([2, Math.min(3, maxRejectStep)]) : 1;
-    history.length = rejectStep;
-    const lastRecord = history[history.length - 1];
-    if (!lastRecord) return history;
-    const d = new Date(lastRecord.createdAt);
-    d.setHours(d.getHours() + randomInt(1, 4));
-    history.push({
-      step: rejectStep + 1,
-      role: rejectStep === 2 ? '财务' : '仓储管理员',
-      user: rejectStep === 2 ? '赵雅琴' : '刘国强',
-      action: 'reject',
-      comment: randomChoice(['预算不足，请调整采购数量', '该商品不在采购目录内', '供应商资质待审核']),
-      createdAt: d.toISOString(),
-      version,
-    });
-  }
-  if (status === 'completed') {
-    if (history.length === 0) return history;
-    const d = new Date(history[history.length - 1].createdAt);
-    d.setDate(d.getDate() + randomInt(1, 3));
-    history.push({
-      step: 4,
-      role: '仓储管理员',
-      user: '刘国强',
-      action: 'approve',
-      comment: '已完成入库',
-      createdAt: d.toISOString(),
-      version: ++version,
-    });
-  }
-  return history;
-}
-
-const PO_STATUS_NAMES: Record<POStatus, string> = {
-  draft: '草稿',
-  finance_pending: '财务待审批',
-  warehouse_pending: '仓储待确认',
-  approved: '审批通过',
-  rejected: '已驳回',
-  completed: '已完成',
-};
-
 export function generatePurchaseOrders(count: number): PurchaseOrder[] {
   const list: PurchaseOrder[] = [];
-  const statuses: POStatus[] = ['draft', 'finance_pending', 'warehouse_pending', 'approved', 'rejected', 'completed'];
-  const currentApprovers: Record<POStatus, string> = {
-    draft: '-',
-    finance_pending: '赵雅琴',
-    warehouse_pending: '刘国强',
-    approved: '-',
-    rejected: '-',
-    completed: '-',
-  };
+  const statuses: POStatus[] = [
+    'draft', 'finance_pending', 'finance_rejected',
+    'warehouse_pending', 'warehouse_rejected', 'approved', 'completed',
+  ];
   for (let i = 0; i < count; i++) {
     const status = randomChoice(statuses);
     const itemCount = randomInt(2, 6);
@@ -453,17 +364,45 @@ export function generatePurchaseOrders(count: number): PurchaseOrder[] {
     const createdAt = randomDateWithinDays(20);
     const expectedDate = new Date(createdAt);
     expectedDate.setDate(expectedDate.getDate() + randomInt(7, 20));
+
+    const rejectionCount = (status === 'finance_rejected' || status === 'warehouse_rejected')
+      ? randomInt(0, 2)
+      : 0;
+    const version = rejectionCount + 1;
+    const currentStep = getCurrentStep(status);
+
+    let lastRejectedFrom: number | undefined;
+    let lastRejectionComment: string | undefined;
+    if (status === 'finance_rejected') {
+      lastRejectedFrom = 2;
+      lastRejectionComment = '预算不足，请调整采购数量';
+    } else if (status === 'warehouse_rejected') {
+      lastRejectedFrom = 3;
+      lastRejectionComment = '该商品不在采购目录内';
+    }
+
+    const createdById = 'U003';
+    const creatorRegion = '华南';
+
     list.push({
       id: randomId('PO'),
       poNo: `PO${Date.now().toString().slice(-4)}${String(i + 1).padStart(4, '0')}`,
       items,
       totalAmount: Number(totalAmount.toFixed(2)),
       status,
-      statusName: PO_STATUS_NAMES[status],
-      currentApprover: currentApprovers[status],
-      approvalHistory: generateApprovalHistory(status, '王俊杰'),
+      statusName: getPOStatusName(status),
+      currentStep,
+      currentApproverRole: getApproverRole(status),
+      currentApprover: status === 'finance_pending' ? '赵雅琴' : status === 'warehouse_pending' ? '刘国强' : '-',
+      version,
+      rejectionCount,
+      lastRejectedFrom,
+      lastRejectionComment,
+      approvalHistory: generateApprovalHistory(status, '王俊杰', createdById, rejectionCount),
       createdAt,
       createdBy: '王俊杰',
+      createdById,
+      creatorRegion,
       expectedDate: expectedDate.toISOString(),
     });
   }
@@ -594,13 +533,28 @@ const ALERT_TITLES: Record<string, Array<{ title: string; description: string }>
   ],
 };
 
+const ALERT_RULE_MAP: Record<string, string[]> = {
+  '库存告急': ['RULE001'],
+  '支付系统异常': ['RULE003'],
+  '订单履约延迟': ['RULE008'],
+  '数据同步失败': ['RULE003'],
+  '退款率偏高': ['RULE003'],
+  '库存预警': ['RULE001'],
+  '活动效果不及预期': ['RULE007'],
+  '服务器负载偏高': ['RULE003'],
+};
+
 export function generateAlerts(count: number): AlertItem[] {
   const list: AlertItem[] = [];
   const types: Array<'critical' | 'warning' | 'info'> = ['critical', 'warning', 'info'];
   const statuses: Array<'pending' | 'processing' | 'resolved'> = ['pending', 'processing', 'resolved'];
+  const ruleIds = ['RULE001', 'RULE002', 'RULE003', 'RULE004', 'RULE005', 'RULE006', 'RULE007', 'RULE008'];
   for (let i = 0; i < count; i++) {
     const type = randomChoice(types);
     const template = randomChoice(ALERT_TITLES[type]);
+    const ruleId = ALERT_RULE_MAP[template.title]
+      ? randomChoice(ALERT_RULE_MAP[template.title])
+      : randomChoice(ruleIds);
     list.push({
       id: randomId('ALT'),
       type,
@@ -610,6 +564,7 @@ export function generateAlerts(count: number): AlertItem[] {
       createdAt: randomDateWithinDays(15),
       status: randomChoice(statuses),
       assignee: randomChoice(['陈志远', '李慧敏', '王俊杰', '赵雅琴', '刘国强']),
+      ruleId,
     });
   }
   return list;
@@ -757,6 +712,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'createPurchaseSuggestion', params: { autoSubmit: false, notify: true } },
     ],
+    createdBy: '陈志远',
+    createdById: 'U001',
     createdAt: randomDateWithinDays(60),
     updatedAt: randomDateWithinDays(10),
   },
@@ -777,6 +734,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'adjustPrice', params: { rate: 1.1, duration: '7d' } },
     ],
+    createdBy: '陈志远',
+    createdById: 'U001',
     createdAt: randomDateWithinDays(90),
     updatedAt: randomDateWithinDays(20),
   },
@@ -784,7 +743,7 @@ export const mockRuleConfigs: RuleConfig[] = [
     id: 'RULE003',
     name: '高退款率自动预警',
     description: '单渠道单日退款率超过5%时自动发送告警',
-    category: 'other',
+    category: 'alert',
     enabled: true,
     trigger: {
       type: 'event',
@@ -797,6 +756,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'sendAlert', params: { level: 'warning', channels: ['email', 'sms'] } },
     ],
+    createdBy: '陈志远',
+    createdById: 'U001',
     createdAt: randomDateWithinDays(45),
     updatedAt: randomDateWithinDays(5),
   },
@@ -816,6 +777,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'applyDiscount', params: { rate: 0.95 } },
     ],
+    createdBy: '王俊杰',
+    createdById: 'U003',
     createdAt: randomDateWithinDays(120),
     updatedAt: randomDateWithinDays(30),
   },
@@ -836,6 +799,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'cancelOrder', params: { reason: '支付超时' } },
     ],
+    createdBy: '陈志远',
+    createdById: 'U001',
     createdAt: randomDateWithinDays(100),
     updatedAt: randomDateWithinDays(15),
   },
@@ -856,6 +821,8 @@ export const mockRuleConfigs: RuleConfig[] = [
       { id: 'A1', type: 'runReconciliation', params: { autoFix: false } },
       { id: 'A2', type: 'sendReport', params: { to: 'finance@company.com' } },
     ],
+    createdBy: '赵雅琴',
+    createdById: 'U004',
     createdAt: randomDateWithinDays(80),
     updatedAt: randomDateWithinDays(10),
   },
@@ -876,6 +843,8 @@ export const mockRuleConfigs: RuleConfig[] = [
     actions: [
       { id: 'A1', type: 'adjustPrice', params: { rate: 0.85 } },
     ],
+    createdBy: '王俊杰',
+    createdById: 'U003',
     createdAt: randomDateWithinDays(70),
     updatedAt: randomDateWithinDays(25),
   },
@@ -883,7 +852,7 @@ export const mockRuleConfigs: RuleConfig[] = [
     id: 'RULE008',
     name: '异常订单自动标记',
     description: '单次下单金额超过5万元的订单自动标记为待审核',
-    category: 'other',
+    category: 'alert',
     enabled: true,
     trigger: {
       type: 'threshold',
@@ -896,6 +865,8 @@ export const mockRuleConfigs: RuleConfig[] = [
       { id: 'A1', type: 'flagOrder', params: { reason: '大额订单审核' } },
       { id: 'A2', type: 'notify', params: { role: 'operator' } },
     ],
+    createdBy: '陈志远',
+    createdById: 'U001',
     createdAt: randomDateWithinDays(55),
     updatedAt: randomDateWithinDays(8),
   },
@@ -907,17 +878,7 @@ export const mockPermissionRoles: PermissionRole[] = [
     name: '超级管理员',
     code: 'super_admin',
     description: '拥有系统所有权限',
-    permissions: [
-      'user:manage', 'user:view', 'role:manage', 'role:view',
-      'order:view', 'order:edit', 'order:export',
-      'inventory:view', 'inventory:edit', 'inventory:export',
-      'purchase:view', 'purchase:create', 'purchase:approve',
-      'marketing:view', 'marketing:manage',
-      'report:view', 'report:export',
-      'rule:view', 'rule:manage',
-      'strategy:view', 'strategy:manage',
-      'audit:view', 'system:config',
-    ],
+    permissions: ROLE_PERMISSIONS.super_admin,
     dataScope: 'all',
   },
   {
@@ -925,14 +886,7 @@ export const mockPermissionRoles: PermissionRole[] = [
     name: '区域经理',
     code: 'region_manager',
     description: '负责所辖区域的运营管理',
-    permissions: [
-      'user:view',
-      'order:view', 'order:edit', 'order:export',
-      'inventory:view',
-      'purchase:view',
-      'marketing:view',
-      'report:view', 'report:export',
-    ],
+    permissions: ROLE_PERMISSIONS.region_manager,
     dataScope: 'region',
   },
   {
@@ -940,14 +894,7 @@ export const mockPermissionRoles: PermissionRole[] = [
     name: '运营专员',
     code: 'operator',
     description: '负责日常运营及营销活动管理',
-    permissions: [
-      'order:view',
-      'inventory:view',
-      'purchase:view', 'purchase:create',
-      'marketing:view', 'marketing:manage',
-      'report:view',
-      'rule:view',
-    ],
+    permissions: ROLE_PERMISSIONS.operator,
     dataScope: 'self',
   },
   {
@@ -955,13 +902,7 @@ export const mockPermissionRoles: PermissionRole[] = [
     name: '财务',
     code: 'finance',
     description: '负责财务审批与对账',
-    permissions: [
-      'order:view', 'order:export',
-      'inventory:view',
-      'purchase:view', 'purchase:approve',
-      'report:view', 'report:export',
-      'rule:view',
-    ],
+    permissions: ROLE_PERMISSIONS.finance,
     dataScope: 'all',
   },
   {
@@ -969,28 +910,206 @@ export const mockPermissionRoles: PermissionRole[] = [
     name: '仓储管理员',
     code: 'warehouse',
     description: '负责库存管理与入库确认',
-    permissions: [
-      'order:view',
-      'inventory:view', 'inventory:edit',
-      'purchase:view', 'purchase:approve',
-      'report:view',
-    ],
+    permissions: ROLE_PERMISSIONS.warehouse,
     dataScope: 'self',
   },
 ];
 
 export const users: Record<string, User & { password: string }> = {
   admin: { ...mockUsers[0], password: 'admin123' },
-  region_manager: { ...mockUsers[1], password: '123456' },
-  operator: { ...mockUsers[2], password: '123456' },
-  finance: { ...mockUsers[3], password: '123456' },
-  warehouse: { ...mockUsers[4], password: '123456' },
+  region: { ...mockUsers[1], password: 'reg123' },
+  operator: { ...mockUsers[2], password: 'oper123' },
+  finance: { ...mockUsers[3], password: 'fin123' },
+  warehouse: { ...mockUsers[4], password: 'ware123' },
 };
 
 export const dashboardData: DashboardOverview = {
   ...mockDashboardOverview,
   alerts: mockAlerts.slice(0, 5),
 };
+
+export function generateInboxMessages(count: number): InboxMessage[] {
+  const list: InboxMessage[] = [];
+  const types: Array<'alert' | 'system' | 'approval'> = ['alert', 'system', 'approval'];
+  const userIds = mockUsers.map((u) => u.id);
+  const alertTitles = [
+    '库存告急预警', '退款率异常', '新订单提醒', '采购单审批通过',
+    '采购单被驳回', '系统维护通知', '活动上线提醒', '数据同步完成',
+  ];
+  const alertContents = [
+    'SKU00123 库存已低于安全水位，请及时补货。',
+    '社交电商渠道近7日退款率达 5.2%，超过阈值 4%，请关注。',
+    '您有 15 个新订单待处理。',
+    '采购单 PO00128 已通过审批，请安排后续事宜。',
+    '采购单 PO00129 已被驳回，原因：预算不足。',
+    '系统将于今晚 22:00-24:00 进行维护，请提前做好准备。',
+    '618预热活动已成功上线，请关注效果数据。',
+    '昨日数据同步已完成，共计 1256 条记录。',
+  ];
+
+  for (let i = 0; i < count; i++) {
+    const type = randomChoice(types);
+    const titleIdx = i % alertTitles.length;
+    list.push({
+      id: randomId('MSG'),
+      type,
+      title: alertTitles[titleIdx],
+      content: alertContents[titleIdx],
+      read: Math.random() > 0.6,
+      userId: userIds[i % userIds.length],
+      relatedId: type === 'approval' ? `PO${randomInt(100, 999)}` : undefined,
+      relatedType: type === 'approval' ? 'purchase' : type === 'alert' ? 'alert' : undefined,
+      createdAt: randomDateWithinDays(15),
+    });
+  }
+  return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export const inboxMessages: InboxMessage[] = generateInboxMessages(20);
+
+export function generateSmsRecords(count: number): SmsRecord[] {
+  const list: SmsRecord[] = [];
+  const types: Array<'alert' | 'marketing' | 'verification'> = ['alert', 'marketing', 'verification'];
+  const statuses: Array<'pending' | 'sent' | 'failed'> = ['pending', 'sent', 'failed'];
+  const userIds = mockUsers.map((u) => u.id);
+  const smsContents = [
+    '【库存预警】SKU00123库存告急，请及时补货。',
+    '【促销通知】618大促即将开始，全场满300减50！',
+    '【验证码】您的验证码是：123456，5分钟内有效。',
+    '【订单提醒】您有新订单待处理，请及时查看。',
+    '【审批通知】采购单PO00128已通过审批。',
+  ];
+  const receiverNames = ['张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十'];
+
+  for (let i = 0; i < count; i++) {
+    const type = randomChoice(types);
+    const status = randomChoice(statuses);
+    const sentAt = status !== 'pending' ? randomDateWithinDays(7) : undefined;
+    const failureReason = status === 'failed'
+      ? randomChoice(['信号弱，发送超时', '号码为空号', '用户拒收', '内容包含敏感词'])
+      : undefined;
+
+    list.push({
+      id: randomId('SMS'),
+      phone: randomPhone(),
+      receiverName: receiverNames[i % receiverNames.length],
+      content: smsContents[i % smsContents.length],
+      type,
+      status,
+      sentAt,
+      failureReason,
+      assigneeUserId: userIds[i % userIds.length],
+      createdAt: randomDateWithinDays(7),
+    });
+  }
+  return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export const smsRecords: SmsRecord[] = generateSmsRecords(15);
+
+const CHANNEL_CONFIG: Record<string, { name: string }> = {
+  self: { name: '自营渠道' },
+  social: { name: '社交电商' },
+  distributor: { name: '分销商' },
+};
+
+export function generateCollectionTasks(): DataCollectionTask[] {
+  const list: DataCollectionTask[] = [];
+  const channels: Array<'self' | 'social' | 'distributor'> = ['self', 'social', 'distributor'];
+  const types: Array<'orders' | 'browsing'> = ['orders', 'browsing'];
+  const statuses: Array<'idle' | 'running' | 'completed' | 'failed'> = ['idle', 'running', 'completed', 'failed'];
+
+  let idx = 0;
+  for (const channel of channels) {
+    for (const type of types) {
+      const status = statuses[idx % statuses.length];
+      const totalRecords = type === 'orders' ? randomInt(500, 5000) : randomInt(5000, 50000);
+      const progress = status === 'completed' ? 100 : status === 'running' ? randomInt(10, 90) : 0;
+      const collected = Math.floor(totalRecords * (progress / 100));
+      const cleaned = Math.floor(collected * randomFloat(0.85, 0.95, 2));
+      const discarded = collected - cleaned;
+      const startedAt = status !== 'idle' ? randomDateWithinDays(3) : undefined;
+      const completedAt = status === 'completed' ? new Date(new Date(startedAt!).getTime() + randomInt(30, 120) * 60000).toISOString() : undefined;
+
+      list.push({
+        id: randomId('TASK'),
+        channel,
+        channelName: CHANNEL_CONFIG[channel].name,
+        type,
+        status,
+        progress,
+        totalRecords,
+        collected,
+        cleaned,
+        discarded,
+        errorMessage: status === 'failed' ? randomChoice(['API接口超时', '权限验证失败', '数据格式异常']) : undefined,
+        startedAt,
+        completedAt,
+        createdAt: randomDateWithinDays(7),
+      });
+      idx++;
+    }
+  }
+  return list;
+}
+
+export const collectionTasks: DataCollectionTask[] = generateCollectionTasks();
+
+export function generateCleanRecords(count: number): CleanRecord[] {
+  const list: CleanRecord[] = [];
+  const issueTypes: Array<'duplicate' | 'missing_phone' | 'abnormal_amount' | 'invalid_status' | 'other'> = [
+    'duplicate', 'missing_phone', 'abnormal_amount', 'invalid_status', 'other',
+  ];
+  const actions: Array<'discarded' | 'fixed' | 'flagged'> = ['discarded', 'fixed', 'flagged'];
+  const issueDescriptions: Record<string, string[]> = {
+    duplicate: ['订单号重复', '用户手机号重复', 'SKU编码重复'],
+    missing_phone: ['收货人手机号为空', '紧急联系人电话缺失'],
+    abnormal_amount: ['订单金额异常偏高', '订单金额为负数', '单价超出合理范围'],
+    invalid_status: ['订单状态流转异常', '支付状态与订单状态不匹配'],
+    other: ['地址格式不规范', '姓名包含特殊字符'],
+  };
+  const taskIds = collectionTasks.map((t) => t.id);
+
+  for (let i = 0; i < count; i++) {
+    const issueType = issueTypes[i % issueTypes.length];
+    const action = issueType === 'duplicate' ? 'discarded'
+      : issueType === 'missing_phone' ? 'flagged'
+      : randomChoice(actions);
+    const description = randomChoice(issueDescriptions[issueType]);
+
+    const originalData: Record<string, unknown> = {
+      orderId: `ORD${randomInt(100000, 999999)}`,
+      userName: randomName(),
+      amount: randomFloat(10, 10000, 2),
+      phone: issueType === 'missing_phone' ? '' : randomPhone(),
+      status: issueType === 'invalid_status' ? 'unknown' : randomChoice(['pending', 'paid', 'shipped']),
+    };
+
+    let fixedData: Record<string, unknown> | undefined;
+    if (action === 'fixed') {
+      fixedData = {
+        ...originalData,
+        phone: issueType === 'missing_phone' ? randomPhone() : originalData.phone,
+        status: issueType === 'invalid_status' ? 'pending' : originalData.status,
+        amount: issueType === 'abnormal_amount' ? Math.abs(originalData.amount as number) : originalData.amount,
+      };
+    }
+
+    list.push({
+      id: randomId('CLEAN'),
+      taskId: taskIds[i % taskIds.length],
+      originalData,
+      issueType,
+      issueDescription: description,
+      action,
+      fixedData,
+      createdAt: randomDateWithinDays(7),
+    });
+  }
+  return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export const cleanRecords: CleanRecord[] = generateCleanRecords(30);
 
 export const inventoryForecasts = mockInventoryForecast;
 export const purchaseOrders = mockPurchaseOrders;
